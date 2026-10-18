@@ -1,0 +1,20 @@
+{
+  "class_names": [
+    "healthy",
+    "covid_positive",
+    "recovered"
+  ],
+  "sample_rate": 16000,
+  "duration": 3.0,
+  "n_mels": 64,
+  "n_fft": 1024,
+  "hop_length": 256,
+  "norm_mean": -59.1690673828125,
+  "norm_std": 22.653432846069336,
+  "input_shape": [
+    64,
+    188,
+    1
+  ],
+  "tensorflow_version": "2.21.0"
+}

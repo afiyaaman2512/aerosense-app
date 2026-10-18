@@ -1,0 +1,7 @@
+streamlit>=1.39
+tensorflow-cpu>=2.16    # use the same major/minor version printed in model_config.json
+librosa>=0.10
+soundfile
+numpy
+pandas
+matplotlib
