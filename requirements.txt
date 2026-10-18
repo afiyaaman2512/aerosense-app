@@ -1,5 +1,6 @@
 streamlit>=1.39
-tensorflow-cpu>=2.16    # use the same major/minor version printed in model_config.json
+scikit-learn==1.6.1
+joblib
 librosa>=0.10
 soundfile
 numpy
