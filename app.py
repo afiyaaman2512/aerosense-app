@@ -1,5 +1,7 @@
 # AeroSense - Streamlit app (scikit-learn model on audio features, no TensorFlow needed)
 # Run with:  streamlit run app.py
+import hashlib
+import io
 import os
 
 import joblib
@@ -34,59 +36,88 @@ if bundle["settings"] != features.SETTINGS:
     st.error("Audio settings in the saved model do not match features.py. Please retrain or fix features.py.")
     st.stop()
 
-st.title("🫁 AeroSense")
-st.write("Upload or record a short cough sound. The model estimates which group it most resembles: "
-         + ", ".join(f"**{c}**" for c in class_names) + ".")
-st.warning("Educational prototype only. This is **not** a medical device and must not be used "
-           "to diagnose or rule out any disease.")
 
-audio_file = None
-tab_upload, tab_record = st.tabs(["Upload a file", "Record with microphone"])
-with tab_upload:
-    uploaded = st.file_uploader("Cough recording (wav / flac / ogg)", type=["wav", "flac", "ogg"])
-    if uploaded is not None:
-        audio_file = uploaded
-with tab_record:
-    if hasattr(st, "audio_input"):
-        recorded = st.audio_input("Record a single cough")
-        if recorded is not None:
-            audio_file = recorded
-    else:
-        st.info("Microphone recording needs a newer Streamlit version.")
-
-if audio_file is not None:
-    st.audio(audio_file)
-
-    audio_file.seek(0)
-    vector = features.extract_handcrafted(audio_file)
+def run_analysis(audio_bytes, signature):
+    """Extract features from the audio, predict, and return everything needed to show the result."""
+    vector = features.extract_handcrafted(io.BytesIO(audio_bytes))
     if vector is None:
-        st.error("Could not read this recording, or it is silent. Please try another file.")
-        st.stop()
+        return {"sig": signature, "error": "Could not read this recording, or it is silent. Please try another file."}
 
     probs = model.predict_proba(scaler.transform(vector.reshape(1, -1)))[0]
     full = np.zeros(len(class_names))
-    full[model.classes_] = probs                      # keep the class order of class_names
-    best = int(np.argmax(full))
+    full[model.classes_] = probs                       # keep the class order of class_names
 
-    st.subheader(f"Prediction: {class_names[best]}")
-    st.metric("Model confidence", f"{full[best] * 100:.1f}%")
-    if full[best] < 0.5:
-        st.caption("Confidence is low - the model is unsure about this recording.")
-    st.bar_chart(pd.DataFrame({"probability": full}, index=class_names))
-
-    # Show what the recording looks like
-    audio_file.seek(0)
-    audio = features.load_for_display(audio_file)
+    audio = features.load_for_display(io.BytesIO(audio_bytes))
     mel = librosa.feature.melspectrogram(y=audio, sr=features.SR, n_fft=features.N_FFT,
                                          hop_length=features.HOP, n_mels=64)
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.2))
-    axes[0].plot(np.arange(len(audio)) / features.SR, audio, linewidth=0.7)
-    axes[0].set_title("Waveform")
-    axes[0].set_xlabel("Time (s)")
-    img = librosa.display.specshow(librosa.power_to_db(mel, ref=np.max), sr=features.SR,
-                                   hop_length=features.HOP, x_axis="time", y_axis="mel",
-                                   ax=axes[1], cmap="magma")
-    axes[1].set_title("Log-Mel spectrogram")
-    fig.colorbar(img, ax=axes[1], format="%+2.0f dB")
-    plt.tight_layout()
-    st.pyplot(fig)
+    return {"sig": signature, "probs": full, "audio": audio,
+            "log_mel": librosa.power_to_db(mel, ref=np.max)}
+
+
+# ---------------------------------------------------------------------------
+# User interface
+# ---------------------------------------------------------------------------
+st.title("🫁 AeroSense")
+st.write("Upload or record a short cough sound, then press **Analyze audio**. The model estimates which group "
+         "it most resembles: " + ", ".join(f"**{c}**" for c in class_names) + ".")
+st.warning("Educational prototype only. This is **not** a medical device and must not be used "
+           "to diagnose or rule out any disease.")
+
+# Only ONE input is active at a time, so an old recording can never override a new upload.
+source = st.radio("Input method", ["Upload a file", "Record with microphone"], horizontal=True)
+
+audio_bytes = None
+if source == "Upload a file":
+    uploaded = st.file_uploader("Cough recording (wav / flac / ogg)", type=["wav", "flac", "ogg"], key="uploader")
+    if uploaded is not None:
+        audio_bytes = uploaded.getvalue()
+else:
+    if hasattr(st, "audio_input"):
+        recorded = st.audio_input("Record a single cough", key="recorder")
+        if recorded is not None:
+            audio_bytes = recorded.getvalue()
+    else:
+        st.info("Microphone recording needs a newer Streamlit version (pip install -U streamlit).")
+
+if audio_bytes is None:
+    st.session_state.pop("result", None)               # nothing selected -> forget old result
+else:
+    signature = hashlib.md5(audio_bytes).hexdigest()   # identifies THIS exact audio
+    st.audio(audio_bytes)
+
+    if st.button("Analyze audio", type="primary"):
+        with st.spinner("Analyzing..."):
+            st.session_state["result"] = run_analysis(audio_bytes, signature)
+
+    result = st.session_state.get("result")
+    if result is not None and result["sig"] != signature:
+        st.session_state.pop("result", None)           # result belongs to a different audio -> drop it
+        result = None
+        st.info("New audio selected - press **Analyze audio** to get its result.")
+    elif result is None:
+        st.info("Press **Analyze audio** to get a prediction.")
+
+    if result is not None:
+        if "error" in result:
+            st.error(result["error"])
+        else:
+            probs = result["probs"]
+            best = int(np.argmax(probs))
+            st.subheader(f"Prediction: {class_names[best]}")
+            st.metric("Model confidence", f"{probs[best] * 100:.1f}%")
+            if probs[best] < 0.5:
+                st.caption("Confidence is low - the model is unsure about this recording.")
+            st.bar_chart(pd.DataFrame({"probability": probs}, index=class_names))
+
+            fig, axes = plt.subplots(1, 2, figsize=(11, 3.2))
+            audio = result["audio"]
+            axes[0].plot(np.arange(len(audio)) / features.SR, audio, linewidth=0.7)
+            axes[0].set_title("Waveform")
+            axes[0].set_xlabel("Time (s)")
+            img = librosa.display.specshow(result["log_mel"], sr=features.SR, hop_length=features.HOP,
+                                           x_axis="time", y_axis="mel", ax=axes[1], cmap="magma")
+            axes[1].set_title("Log-Mel spectrogram")
+            fig.colorbar(img, ax=axes[1], format="%+2.0f dB")
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
